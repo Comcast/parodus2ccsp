@@ -4,8 +4,12 @@
 *@description This file is for Message Bus initalization of the component and component path registration.
 *
 */
+#include <stdio.h>
 #include "ssp_global.h"
 
+#if defined(TESTING_BUILD)
+#include "../../tests/mock_stack.h"
+#endif //TESTING_BUILD
 
 ANSC_HANDLE                 bus_handle               = NULL;
 extern char                 g_Subsystem[32];
@@ -62,7 +66,6 @@ ANSC_STATUS ssp_Mbi_MessageBusEngage(char * component_id,char * config_file,char
     if ( returnStatus != ANSC_STATUS_SUCCESS )
     {
         CcspTraceError((" !!! SSD Message Bus Init ERROR !!!\n"));
-
         return returnStatus;
     }
 
@@ -104,7 +107,6 @@ ANSC_STATUS ssp_Mbi_MessageBusEngage(char * component_id,char * config_file,char
     if ( returnStatus != CCSP_Message_Bus_OK )
     {
         CcspTraceError((" !!! CCSP_Message_Bus_Register_Path ERROR returnStatus: %d\n!!!\n", returnStatus));
-
         return returnStatus;
     }
 
@@ -120,8 +122,7 @@ ANSC_STATUS ssp_Mbi_MessageBusEngage(char * component_id,char * config_file,char
 
     if ( returnStatus != CCSP_Message_Bus_OK )
     {
-         CcspTraceError((" !!! CCSP_Message_Bus_Register_Event: CurrentSessionIDSignal ERROR returnStatus: %d!!!\n", returnStatus));
-
+        fflush(stdout);
         return returnStatus;
     }
 
