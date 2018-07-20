@@ -15,6 +15,7 @@
 
 #define WEBPA_DEVICE_REBOOT_PARAM          "Device.X_CISCO_COM_DeviceControl.RebootDevice"
 #define WEBPA_DEVICE_REBOOT_VALUE          "Device"
+#define WEBPA_CLIENT					"webpa_client"
 
 /*----------------------------------------------------------------------------*/
 /*                               Data Structures                              */
@@ -32,13 +33,15 @@ static WDMP_STATUS set_cmc_and_cid(char *dbCMC, char *cid, int isNew);
 static WDMP_STATUS validate_parameter(param_t *param, int paramCount, REQ_TYPE type);
 static WDMP_STATUS validate_table_object(table_req_t *tableObj);
 static void setRebootReason(param_t param, WEBPA_SET_TYPE setType);
+static void add_wildcard_timespan_to_response(money_trace_spans *timeSpan, money_trace_spans *wildcardSpan);
+static void add_total_webpa_client_time(uint64_t startTime,uint32_t duration,money_trace_spans *timeSpan);
 
 extern ANSC_HANDLE bus_handle;
 /*----------------------------------------------------------------------------*/
 /*                             External Functions                             */
 /*----------------------------------------------------------------------------*/
 
-void processRequest(char *reqPayload,char *transactionId, char **resPayload)
+void processRequest(char *reqPayload,char *transactionId, bool include_spans, char **resPayload, money_trace_spans *timeSpan)
 {
         req_struct *reqObj = NULL;
         res_struct *resObj = NULL;
@@ -50,12 +53,17 @@ void processRequest(char *reqPayload,char *transactionId, char **resPayload)
         WDMP_STATUS setCidStatus = WDMP_SUCCESS, setCmcStatus = WDMP_SUCCESS;
         const char *wildcardList[1];
         char *param = NULL;
+        money_trace_spans *wildcardSpan = NULL;
+        uint32_t duration = 0;
+        uint64_t startTime = 0, endTime = 0;
+        struct timespec start,end;
 	char *dbCID = NULL;
 	char *dbCMC = NULL;
 	char newCMC[32]={'\0'};
 	
         WalPrint("************** processRequest *****************\n");
-        
+        startTime = getCurrentTimeInMicroSeconds(&start);
+        WalPrint("WEBPA start_time : %llu\n",startTime);
         wdmp_parse_request(reqPayload,&reqObj);
         WalInfo("transactionId in request: %s\n",transactionId);
         
@@ -68,17 +76,24 @@ void processRequest(char *reqPayload,char *transactionId, char **resPayload)
                 
                 resObj->reqType = reqObj->reqType;
                 WalPrint("Response:> type = %d\n", resObj->reqType);
-                
+                if(include_spans)
+                {
+                    resObj->timeSpan = (money_trace_spans *) malloc(sizeof(money_trace_spans));
+                    memset(resObj->timeSpan,0,(sizeof(money_trace_spans)));
+                }
+                else
+                {
+                    WalPrint("include_spans is false\n");
+                    resObj->timeSpan = NULL;
+                }
                 switch( reqObj->reqType ) 
                 {
-                
                         case GET:
                         {
                                 WalPrint("Request:> ParamCount = %zu\n",reqObj->u.getReq->paramCnt);
                                 resObj->paramCnt = reqObj->u.getReq->paramCnt;
                                 WalPrint("Response:> paramCnt = %zu\n", resObj->paramCnt);
                                 resObj->retStatus = (WDMP_STATUS *) malloc(sizeof(WDMP_STATUS)*resObj->paramCnt);
-                                resObj->timeSpan = NULL;
                                 paramCount = (int)reqObj->u.getReq->paramCnt;
                                 
                                 for (i = 0; i < paramCount; i++) 
@@ -139,18 +154,24 @@ void processRequest(char *reqPayload,char *transactionId, char **resPayload)
 
                                         if(wildcardParamCount > 0)
                                         {
+                                                wildcardSpan=(money_trace_spans *) malloc(sizeof(money_trace_spans));
+                                                memset(wildcardSpan,0,(sizeof(money_trace_spans)));
                                                 index = index+nonWildcardParamCount;
                                                 for(i = 0; i < wildcardParamCount; i++)
                                                 {
                                                         wildcardList[0] = wildcardGetParamList[i];
                                                         resObj->u.getRes->paramNames[index] = wildcardGetParamList[i];
                                                         WalPrint("Response:> paramNames[%d] = %s\n",index,resObj->u.getRes->paramNames[index]);
-                                                        getValues(wildcardList, 1, index,resObj->timeSpan, &resObj->u.getRes->params, &retCount, &ret);
+                                                        getValues(wildcardList, 1, index, wildcardSpan, &resObj->u.getRes->params, &retCount, &ret);
                                                         WalPrint("Wildcard retCount : %d ret: %d\n",retCount, ret);
                                                         resObj->u.getRes->retParamCnt[index] = retCount;
                                                         WalPrint("Response:> retParamCnt[%d] = %zu\n",index,resObj->u.getRes->retParamCnt[index]);
                                                         resObj->retStatus[index] = ret;
                                                         WalPrint("Response:> retStatus[%d] = %d\n",index,resObj->retStatus[index]);
+                                                        if(include_spans)
+                                                        {
+                                                            add_wildcard_timespan_to_response(resObj->timeSpan, wildcardSpan);
+                                                        }
                                                         index++;
                                                 }
                                         }
@@ -164,7 +185,6 @@ void processRequest(char *reqPayload,char *transactionId, char **resPayload)
                                 resObj->paramCnt = reqObj->u.getReq->paramCnt;
                                 WalPrint("Response:> paramCnt = %zu\n", resObj->paramCnt);
                                 resObj->retStatus = (WDMP_STATUS *) malloc(sizeof(WDMP_STATUS)*resObj->paramCnt);
-                                resObj->timeSpan = NULL;
                                 paramCount = (int)reqObj->u.getReq->paramCnt;
                                 
                                 for (i = 0; i < paramCount; i++) 
@@ -216,7 +236,6 @@ void processRequest(char *reqPayload,char *transactionId, char **resPayload)
                                 resObj->paramCnt = reqObj->u.setReq->paramCnt;
                                 WalPrint("Response:> paramCnt = %zu\n", resObj->paramCnt);
                                 resObj->retStatus = (WDMP_STATUS *) malloc(sizeof(WDMP_STATUS)*resObj->paramCnt);
-                                resObj->timeSpan = NULL;
                                 paramCount = (int)reqObj->u.setReq->paramCnt;
                                 resObj->u.paramRes = (param_res_t *) malloc(sizeof(param_res_t));
                                 memset(resObj->u.paramRes, 0, sizeof(param_res_t));
@@ -277,7 +296,6 @@ void processRequest(char *reqPayload,char *transactionId, char **resPayload)
                                 resObj->paramCnt = reqObj->u.testSetReq->paramCnt;
                                 WalPrint("Response:> paramCnt = %zu\n", resObj->paramCnt);
                                 resObj->retStatus = (WDMP_STATUS *) malloc(sizeof(WDMP_STATUS));
-                                resObj->timeSpan = NULL;
                                 paramCount = (int)reqObj->u.testSetReq->paramCnt;
                                 resObj->u.paramRes = (param_res_t *) malloc(sizeof(param_res_t));
                                 memset(resObj->u.paramRes, 0, sizeof(param_res_t));
@@ -376,13 +394,12 @@ void processRequest(char *reqPayload,char *transactionId, char **resPayload)
                                 resObj->paramCnt = reqObj->u.tableReq->rowCnt;
                                 WalPrint("Response:> paramCnt = %zu\n", resObj->paramCnt);
                                 resObj->retStatus = (WDMP_STATUS *) malloc(sizeof(WDMP_STATUS)*resObj->paramCnt);
-                                resObj->timeSpan = NULL;
                                 WalPrint("Request:> Object Name = %s\n",reqObj->u.tableReq->objectName);
 
                                 ret = validate_table_object(reqObj->u.tableReq);
                                 if(ret == WDMP_SUCCESS)
                                 {
-                                        replaceTable(reqObj->u.tableReq->objectName,reqObj->u.tableReq->rows,reqObj->u.tableReq->rowCnt,&ret);
+                                        replaceTable(reqObj->u.tableReq->objectName,reqObj->u.tableReq->rows,reqObj->u.tableReq->rowCnt, resObj->timeSpan, &ret);
                                 }
                                 else
                                 {
@@ -400,13 +417,12 @@ void processRequest(char *reqPayload,char *transactionId, char **resPayload)
                                 resObj->paramCnt = reqObj->u.tableReq->rowCnt;
                                 WalPrint("Response:> paramCnt = %zu\n", resObj->paramCnt);
                                 resObj->retStatus = (WDMP_STATUS *) malloc(sizeof(WDMP_STATUS)*resObj->paramCnt);
-                                resObj->timeSpan = NULL;
                                 WalPrint("Request:> Object Name = %s\n",reqObj->u.tableReq->objectName);
 
                                 ret = validate_table_object(reqObj->u.tableReq);
                                 if(ret == WDMP_SUCCESS)
                                 {
-                                        deleteRowTable(reqObj->u.tableReq->objectName,&ret);
+                                        deleteRowTable(reqObj->u.tableReq->objectName,resObj->timeSpan,&ret);
                                 }
                                 else
                                 {
@@ -425,7 +441,6 @@ void processRequest(char *reqPayload,char *transactionId, char **resPayload)
                                 WalPrint("Response:> paramCnt = %zu\n", resObj->paramCnt);
                                 WalPrint("Request:> Object Name = %s\n",reqObj->u.tableReq->objectName);
                                 resObj->retStatus = (WDMP_STATUS *) malloc(sizeof(WDMP_STATUS)*resObj->paramCnt);
-                                resObj->timeSpan = NULL;
 
                                 ret = validate_table_object(reqObj->u.tableReq);
                                 if(ret == WDMP_SUCCESS)
@@ -436,7 +451,7 @@ void processRequest(char *reqPayload,char *transactionId, char **resPayload)
                                         if(reqObj->u.tableReq->rowCnt > 0)
                                         {
                                                 resObj->u.tableRes->newObj = (char *) malloc(sizeof(char) * MAX_PARAMETERNAME_LEN);
-                                                addRowTable(reqObj->u.tableReq->objectName, reqObj->u.tableReq->rows,&resObj->u.tableRes->newObj, &ret);
+                                                addRowTable(reqObj->u.tableReq->objectName, reqObj->u.tableReq->rows,&resObj->u.tableRes->newObj, resObj->timeSpan, &ret);
                                         }
 
                                         if(resObj->u.tableRes->newObj == NULL)
@@ -464,6 +479,24 @@ void processRequest(char *reqPayload,char *transactionId, char **resPayload)
 		WalError("Command is NULL\n");
 	}
 
+        endTime = getCurrentTimeInMicroSeconds(&end);
+        duration = endTime - startTime;
+        WalPrint("WEBPA duration : %lu\n", duration);
+        if(include_spans)
+        {
+            add_total_webpa_client_time(startTime, duration, resObj->timeSpan);
+            *timeSpan = *resObj->timeSpan;
+            (*timeSpan).count = resObj->timeSpan->count;
+            (*timeSpan).spans = ((money_trace_span *) malloc(sizeof(money_trace_span)* resObj->timeSpan->count));
+            memset((*timeSpan).spans,0,(sizeof(money_trace_span)* resObj->timeSpan->count));
+            for(i =0 ; i<resObj->timeSpan->count; i++)
+            {
+                WalPrint("Loop %d => name : %s \t start: %llu \t duration : %lu\n",resObj->timeSpan->spans[i].name, resObj->timeSpan->spans[i].start, resObj->timeSpan->spans[i].duration);
+                (*timeSpan).spans[i].name = strdup(resObj->timeSpan->spans[i].name);
+                (*timeSpan).spans[i].start = resObj->timeSpan->spans[i].start;
+                (*timeSpan).spans[i].duration = resObj->timeSpan->spans[i].duration;
+            }
+        }
         wdmp_form_response(resObj,&payload);
         WalPrint("payload : %s\n",payload);
         *resPayload = payload;
@@ -673,4 +706,92 @@ static void setRebootReason(param_t param, WEBPA_SET_TYPE setType)
 		WAL_FREE(rebootParam);
 	}
 	
+}
+
+static void add_wildcard_timespan_to_response(money_trace_spans *timeSpan, money_trace_spans *wildcardSpan)
+{
+    unsigned int cnt = 0, count = 0;
+    int matchFlag = 0;
+    WalPrint("----------------- start of add_wildcard_timespan_to_response -------\n");
+    count = timeSpan->count;
+    WalPrint("count : %d\n",count);
+    if(count == 0)
+    {
+        for(cnt = 0; cnt < wildcardSpan->count; cnt++)
+        {
+            WalPrint("wildcardSpan->spans[%d].name : %s, wildcardSpan->spans[%d].start : %llu, wildcardSpan->spans[%d].duration : %lu \n ",cnt,wildcardSpan->spans[cnt].name,cnt,wildcardSpan->spans[cnt].start,cnt,wildcardSpan->spans[cnt].duration);
+        }
+
+        timeSpan->spans = wildcardSpan->spans;
+        timeSpan->count = wildcardSpan->count;
+
+        for(cnt = 0; cnt < timeSpan->count; cnt++)
+        {
+            WalPrint("timeSpan->spans[%d].name : %s, timeSpan->spans[%d].start : %llu, timeSpan->spans[%d].duration : %lu \n ",cnt,timeSpan->spans[cnt].name,cnt,timeSpan->spans[cnt].start,cnt,timeSpan->spans[cnt].duration);
+        }
+    }
+    else
+    {
+        if(wildcardSpan->spans != NULL)
+        {
+            for(cnt = 0; cnt < count; cnt++)
+            {
+                WalPrint("B4 compare\n");
+                WalPrint("timeSpan->spans[%d].name : %s, wildcardSpan->spans[0].name : %s\n",cnt,timeSpan->spans[cnt].name,wildcardSpan->spans[0].name);
+                if(0 != strcmp(timeSpan->spans[cnt].name, wildcardSpan->spans[0].name))
+                {
+                    timeSpan->spans[cnt].duration = timeSpan->spans[cnt].duration + wildcardSpan->spans[0].duration;
+                    WalPrint("timeSpan->spans[%d].duration : %lu\n",cnt,timeSpan->spans[cnt].duration);
+                    WAL_FREE(wildcardSpan->spans[0].name);
+                    matchFlag = 1;
+                    break;
+                }
+            }
+            if(matchFlag == 0)
+            {
+                timeSpan->count = timeSpan->count +1;
+                WalPrint("timeSpan->count : %d\n",timeSpan->count);
+                timeSpan->spans = (money_trace_span *) realloc(timeSpan->spans,sizeof(money_trace_span)* timeSpan->count);
+                timeSpan->spans[timeSpan->count - 1].name = strdup(wildcardSpan->spans[0].name);
+                WalPrint("timeSpan->spans[%d].name : %s\n",timeSpan->count - 1,timeSpan->spans[timeSpan->count - 1].name);
+                WalPrint("wildcardSpan->spans[0].start : %llu\n",wildcardSpan->spans[0].start);
+                timeSpan->spans[timeSpan->count - 1].start = wildcardSpan->spans[0].start;
+                WalPrint("timeSpan->spans[%d].start : %llu\n",timeSpan->count - 1,timeSpan->spans[timeSpan->count - 1].start);
+                WalPrint("wildcardSpan->spans[0].duration : %lu\n",wildcardSpan->spans[0].duration);
+                timeSpan->spans[timeSpan->count - 1].duration = wildcardSpan->spans[0].duration;
+                WalPrint("timeSpan->spans[%d].duration : %lu\n",timeSpan->count - 1,timeSpan->spans[timeSpan->count - 1].duration);
+                WAL_FREE(wildcardSpan->spans[0].name);
+            }
+            WAL_FREE(wildcardSpan->spans);
+        }
+        WAL_FREE(wildcardSpan);
+    }
+    WalPrint("----------------- End of add_wildcard_timespan_to_response -------\n");
+}
+
+static void add_total_webpa_client_time(uint64_t startTime,uint32_t duration,money_trace_spans *timeSpan)
+{
+    WalPrint("---------------- Start of add_total_webpa_client_time ----------------\n");
+    if(timeSpan->count == 0)
+    {
+        timeSpan->count = timeSpan->count +1;
+        WalPrint("timeSpan->count : %d\n",timeSpan->count);
+        timeSpan->spans = (money_trace_span *) malloc(sizeof(money_trace_span)* timeSpan->count);
+    }
+    else
+    {
+        timeSpan->count = timeSpan->count +1;
+        WalPrint("timeSpan->count : %d\n",timeSpan->count);
+        timeSpan->spans = (money_trace_span *) realloc(timeSpan->spans,sizeof(money_trace_span)* timeSpan->count);
+    }
+
+    timeSpan->spans[timeSpan->count - 1].name = strdup(WEBPA_CLIENT);
+    WalPrint("timeSpan->spans[%d].name : %s\n",timeSpan->count - 1,timeSpan->spans[timeSpan->count - 1].name);
+    WalPrint("startTime : %llu\n",startTime);
+    timeSpan->spans[timeSpan->count - 1].start = startTime;
+    WalPrint("timeSpan->spans[%d].start : %llu\n",timeSpan->count - 1,timeSpan->spans[timeSpan->count - 1].start);
+    WalPrint("timeDuration : %lu\n",duration);
+    timeSpan->spans[timeSpan->count - 1].duration = duration;
+    WalPrint("timeSpan->spans[%d].duration : %lu\n",timeSpan->count - 1,timeSpan->spans[timeSpan->count - 1].duration);
+    WalPrint("---------------- End of add_total_webpa_client_time ----------------\n");
 }

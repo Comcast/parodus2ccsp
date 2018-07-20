@@ -90,7 +90,7 @@ long timeValDiff(struct timespec *starttime, struct timespec *finishtime);
  * @param[in] reqPayload input request to process
  * @param[in] resPayload retuns response payload
  */
-void processRequest(char *reqPayload, char *transactionId, char **resPayload);
+void processRequest(char *reqPayload, char *transactionId, bool include_spans, char **resPayload, money_trace_spans *timeSpan);
 
 /**
  * @brief getValues Returns the parameter values from stack for GET request
@@ -146,7 +146,7 @@ void setAttributes(param_t *attArr, const unsigned int paramCount, money_trace_s
  * param[out] retObject return new row added
  * param[out] retStatus Returns status
  */
-void addRowTable(char *objectName, TableData *list,char **retObject, WDMP_STATUS *retStatus);
+void addRowTable(char *objectName, TableData *list,char **retObject, money_trace_spans *timeSpan, WDMP_STATUS *retStatus);
 
 /**
  * @brief deleteRowTable deletes row from a dynamic table
@@ -154,7 +154,7 @@ void addRowTable(char *objectName, TableData *list,char **retObject, WDMP_STATUS
  * param[in] objectName row to delete
  * param[out] retStatus Returns status
  */
-void deleteRowTable(char *object,WDMP_STATUS *retStatus);
+void deleteRowTable(char *object, money_trace_spans *timeSpan, WDMP_STATUS *retStatus);
 
 /**
  * @brief replaceTable replaces existing data of table with provided data
@@ -164,7 +164,7 @@ void deleteRowTable(char *object,WDMP_STATUS *retStatus);
  * param[in] paramcount count of rows
  * param[out] retStatus Returns status
  */
-void replaceTable(char *objectName,TableData * list,unsigned int paramcount,WDMP_STATUS *retStatus);
+void replaceTable(char *objectName,TableData * list,unsigned int paramcount, money_trace_spans *timeSpan, WDMP_STATUS *retStatus);
 
 /*
  * @brief To initiate notification Task handling

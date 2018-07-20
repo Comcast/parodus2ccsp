@@ -23,7 +23,7 @@
 /*----------------------------------------------------------------------------*/
 /*                             Function Prototypes                            */
 /*----------------------------------------------------------------------------*/
-static int getParamAttributes(char *parameterNames[], int paramCount, char *CompName, char *dbusPath, money_trace_spans *timeSpan, param_t **attr, int index);
+static int getParamAttributes(char *parameterNames[], int paramCount, char *CompName, char *dbusPath, money_trace_spans *timeSpan, int compIndex, param_t **attr, int index);
 static int setParamAttributes(param_t *attArr,int paramCount, money_trace_spans *timeSpan);
 
 extern BOOL applySettingsFlag;
@@ -62,6 +62,11 @@ void getAttributes(const char *paramName[], const unsigned int paramCount, money
 	WalPrint("Number of parameter groups : %d\n",compCount);
 	if(error != 1)
 	{
+	    if(timeSpan)
+	    {
+	        timeSpan->spans = (money_trace_span *) malloc(sizeof(money_trace_span)* compCount);
+	        memset(timeSpan->spans,0,(sizeof(money_trace_span)* compCount));
+	    }
 		for(cnt1 = 0; cnt1 < compCount; cnt1++)
 		{
 			WalPrint("********** Parameter group ****************\n");
@@ -75,17 +80,30 @@ void getAttributes(const char *paramName[], const unsigned int paramCount, money
 			{
 				ret = CCSP_ERR_WIFI_BUSY;
 				WalError("Wifi busy\n");
+				if(timeSpan)
+				{
+				    timeSpan->count = 0;
+				    WAL_FREE(timeSpan->spans);
+				}
 				break;
 			}
 		  	// GET atomic value call
 			WalPrint("index %d\n",index);
-		  	ret = getParamAttributes(ParamGroup[cnt1].parameterName, ParamGroup[cnt1].parameterCount, ParamGroup[cnt1].comp_name, ParamGroup[cnt1].dbus_path, timeSpan, attr, index);
+		  	ret = getParamAttributes(ParamGroup[cnt1].parameterName, ParamGroup[cnt1].parameterCount, ParamGroup[cnt1].comp_name, ParamGroup[cnt1].dbus_path, timeSpan, cnt1, attr, index);
 		  	if(ret != CCSP_SUCCESS)
 		  	{
 				WalError("Get attributes call failed for ParamGroup[%d]->comp_name :%s ret: %d\n",cnt1,ParamGroup[cnt1].comp_name,ret);
 				break;
 		  	}
+		  	if(timeSpan)
+		  	{
+		  	    timeSpan->count++;
+		  	}
 			index = index + ParamGroup[cnt1].parameterCount;
+		}
+		if(timeSpan)
+		{
+		    WalPrint("timeSpan->count : %d\n",timeSpan->count);
 		}
 	}
 	
@@ -117,11 +135,14 @@ void setAttributes(param_t *attArr, const unsigned int paramCount, money_trace_s
  * @param[out] attr parameter attribute Array
  * @param[in] index parameter attribute Array index
  */
-static int getParamAttributes(char *parameterNames[], int paramCount, char *CompName, char *dbusPath, money_trace_spans *timeSpan, param_t **attr, int index)
+static int getParamAttributes(char *parameterNames[], int paramCount, char *CompName, char *dbusPath, money_trace_spans *timeSpan, int compIndex, param_t **attr, int index)
 {
 	int ret = 0, sizeAttrArr = 0, cnt=0, retIndex=0, error=0;
 	char **parameterNamesLocal = NULL;
 	parameterAttributeStruct_t** ppAttrArray = NULL;
+	uint64_t startTime = 0, endTime = 0;
+	struct timespec start, end;
+	uint32_t timeDuration = 0;
 	WalPrint(" ------ Start of getParamAttributes ----\n");
 	parameterNamesLocal = (char **) malloc(sizeof(char *) * paramCount);
 	memset(parameterNamesLocal,0,(sizeof(char *) * paramCount));
@@ -148,6 +169,11 @@ static int getParamAttributes(char *parameterNames[], int paramCount, char *Comp
 		         	WalError("%s has invalid WiFi index, Valid range is between 10001-10008 and 10101-10108. ret = %d\n",parameterNamesLocal[cnt], ret);
 		 	}
 			error = 1;
+			if(timeSpan)
+			{
+				timeSpan->count = 0;
+				WAL_FREE(timeSpan->spans);
+			}
 			break;
 		}
 
@@ -157,7 +183,25 @@ static int getParamAttributes(char *parameterNames[], int paramCount, char *Comp
 	if(error != 1)
 	{
 		WalInfo("CompName = %s, dbusPath : %s, paramCount = %d\n", CompName, dbusPath, paramCount);
+		if(timeSpan)
+	    {
+		    startTime = getCurrentTimeInMicroSeconds(&start);
+		    WalPrint("component start_time : %llu\n",startTime);
+	    }
 		ret = CcspBaseIf_getParameterAttributes(bus_handle,CompName,dbusPath,parameterNamesLocal,paramCount, &sizeAttrArr, &ppAttrArray);
+		if(timeSpan)
+	    {
+		    endTime = getCurrentTimeInMicroSeconds(&end);
+		    timeDuration = endTime - startTime;
+		    timeSpan->spans[compIndex].name = strdup(CompName);
+		    WalPrint("timeSpan->spans[%d].name : %s\n",compIndex,timeSpan->spans[compIndex].name);
+		    WalPrint("start_time : %llu\n",startTime);
+		    timeSpan->spans[compIndex].start = startTime;
+		    WalPrint("timeSpan->spans[%d].start : %llu\n",compIndex,timeSpan->spans[compIndex].start);
+		    WalPrint("timeDuration : %lu\n",timeDuration);
+		    timeSpan->spans[compIndex].duration = timeDuration;
+		    WalPrint("timeSpan->spans[%d].duration : %lu\n",compIndex,timeSpan->spans[compIndex].duration);
+	    }
 		WalPrint("----- After GPA ret = %d------\n",ret);
 		if (ret != CCSP_SUCCESS)
 		{
@@ -210,6 +254,10 @@ static int setParamAttributes(param_t *attArr,int paramCount, money_trace_spans 
 	char **tempCompName = NULL;
 	char **dbusPath = NULL;
 	char **tempDbusPath = NULL;
+	uint64_t startTime = 0, endTime = 0;
+	struct timespec start, end;
+	uint64_t start_time = 0;
+	uint32_t timeDuration = 0;
 	
 	parameterAttributeStruct_t *attriStruct =(parameterAttributeStruct_t*) malloc(sizeof(parameterAttributeStruct_t) * paramCount);
 	memset(attriStruct,0,(sizeof(parameterAttributeStruct_t) * paramCount));
@@ -292,12 +340,30 @@ static int setParamAttributes(param_t *attArr,int paramCount, money_trace_spans 
 		if(notificationType == 1)
 		{
 #ifndef USE_NOTIFY_COMPONENT
+            if(timeSpan)
+			{
+				startTime = getCurrentTimeInMicroSeconds(&start);
+			}
 			ret = CcspBaseIf_Register_Event(bus_handle, compName[0], "parameterValueChangeSignal");
+			if(timeSpan)
+			{
+				endTime = getCurrentTimeInMicroSeconds(&end);
+				timeDuration += endTime - startTime;
+			}
 			if (CCSP_SUCCESS != ret)
 			{
 				WalError("WebPa: CcspBaseIf_Register_Event failed!!!\n");
 			}
+			if(timeSpan)
+			{
+				startTime = getCurrentTimeInMicroSeconds(&start);
+			}
 			CcspBaseIf_SetCallback2(bus_handle, "parameterValueChangeSignal", ccspWebPaValueChangedCB, NULL);
+			if(timeSpan)
+			{
+				endTime = getCurrentTimeInMicroSeconds(&end);
+				timeDuration += endTime - startTime;
+			}
 #endif
 		}
 		attriStruct[cnt].parameterName = malloc( sizeof(char) * MAX_PARAMETERNAME_LEN);
@@ -311,7 +377,31 @@ static int setParamAttributes(param_t *attArr,int paramCount, money_trace_spans 
 	
 	if(error != 1)
 	{
+	    if(timeSpan)
+		{
+			timeSpan->spans = (money_trace_span *) malloc(sizeof(money_trace_span));
+			memset(timeSpan->spans,0,(sizeof(money_trace_span)));
+			timeSpan->count = 1;
+			WalPrint("timeSpan->count : %d\n",timeSpan->count);
+			startTime = getCurrentTimeInMicroSeconds(&start);
+			start_time = startTime;
+			WalPrint("component start_time: %llu\n",start_time);
+		}
 		ret = CcspBaseIf_setParameterAttributes(bus_handle,compName[0], dbusPath[0], 0, attriStruct, paramCount);
+		if(timeSpan)
+		{
+			endTime = getCurrentTimeInMicroSeconds(&end);
+			timeDuration += endTime - startTime;
+
+			timeSpan->spans[0].name = strdup(compName[0]);
+			WalPrint("timeSpan->spans[0].name : %s\n",timeSpan->spans[0].name);
+			WalPrint("start_time : %llu\n",start_time);
+			timeSpan->spans[0].start = start_time;
+			WalPrint("timeSpan->spans[0].start : %llu\n",timeSpan->spans[0].start);
+			WalPrint("timeDuration : %lu\n",timeDuration);
+			timeSpan->spans[0].duration = timeDuration;
+			WalPrint("timeSpan->spans[0].duration : %lu\n",timeSpan->spans[0].duration);
+		}
 		WalPrint("=== After SPA == ret = %d\n",ret);
 		if (CCSP_SUCCESS != ret)
 		{

@@ -68,18 +68,18 @@ void setAttributes(param_t *attArr, const unsigned int paramCount, money_trace_s
     function_called();
 }
 
-void addRowTable(char *objectName, TableData *list,char **retObject, WDMP_STATUS *retStatus)
+void addRowTable(char *objectName, TableData *list,char **retObject, money_trace_spans *timeSpan, WDMP_STATUS *retStatus)
 {
-    UNUSED(objectName); UNUSED(list); UNUSED(retObject); UNUSED(retStatus);
+    UNUSED(objectName); UNUSED(list); UNUSED(retObject); UNUSED(timeSpan); UNUSED(retStatus);
     function_called();
 }
-void deleteRowTable(char *object,WDMP_STATUS *retStatus)
+void deleteRowTable(char *object, money_trace_spans *timeSpan, WDMP_STATUS *retStatus)
 {
-    UNUSED(object); UNUSED(retStatus);
+    UNUSED(object); UNUSED(timeSpan); UNUSED(retStatus);
     function_called();
 }
 
-void replaceTable(char *objectName,TableData * list,unsigned int paramcount,WDMP_STATUS *retStatus)
+void replaceTable(char *objectName,TableData * list,unsigned int paramcount, money_trace_spans *timeSpan, WDMP_STATUS *retStatus)
 {
     UNUSED(objectName); UNUSED(list); UNUSED(paramcount); UNUSED(retStatus);
     function_called();
@@ -110,6 +110,12 @@ int setWebpaParameterValues(parameterValStruct_t *val, int paramCount, char **fa
     UNUSED(faultParam); UNUSED(paramCount); UNUSED(val);
     return (int) mock();
 }
+
+uint64_t getCurrentTimeInMicroSeconds(struct timespec *timer)
+{
+    UNUSED(timer);
+    return (uint64_t) mock();
+}
 /*----------------------------------------------------------------------------*/
 /*                                   Tests                                    */
 /*----------------------------------------------------------------------------*/
@@ -121,6 +127,8 @@ void test_processRequest_singleGet()
     char *resPayload = NULL;
     cJSON *response = NULL, *paramArray = NULL, *resParamObj = NULL;
     count = 1;
+    money_trace_spans timeSpan;
+    memset(&timeSpan, 0, sizeof(money_trace_spans));
     parameterList = (param_t **) malloc(sizeof(param_t*));
     parameterList[0] = (param_t *) malloc(sizeof(param_t));
     parameterList[0]->name = (char *) malloc(sizeof(char) * MAX_PARAMETER_LEN);
@@ -129,14 +137,18 @@ void test_processRequest_singleGet()
     strncpy(parameterList[0]->value, "true",MAX_PARAMETER_LEN);
     parameterList[0]->type = WDMP_BOOLEAN;
     status = WDMP_SUCCESS;
+    will_return(getCurrentTimeInMicroSeconds, 1543215678899);
     expect_value(getValues, paramCount, 1);
     expect_value(getValues, index, 0);
     expect_function_call(getValues);
-    processRequest(reqPayload, transactionId, &resPayload);
+    will_return(getCurrentTimeInMicroSeconds, 1543215679000);
+    processRequest(reqPayload, transactionId, false, &resPayload, &timeSpan);
     WalInfo("resPayload : %s\n",resPayload);
     assert_non_null(resPayload);
     response = cJSON_Parse(resPayload);
     assert_non_null(response);
+    assert_int_equal(timeSpan.count, 0);
+    assert_null(timeSpan.spans);
     paramArray = cJSON_GetObjectItem(response, "parameters");
     assert_int_equal(1, cJSON_GetArraySize(paramArray));
     resParamObj = cJSON_GetArrayItem(paramArray, 0);
@@ -161,6 +173,8 @@ void test_processRequest_WildcardsGet()
     char *values[MAX_PARAMETER_LEN] = {"32","abcd", "1"};
     parameterList = (param_t **) malloc(sizeof(param_t*));
     parameterList[0] = (param_t *) malloc(sizeof(param_t)*count);
+    money_trace_spans timeSpan;
+    memset(&timeSpan, 0, sizeof(money_trace_spans));
 
     for(i = 0; i<count; i++)
     {
@@ -171,11 +185,23 @@ void test_processRequest_WildcardsGet()
         parameterList[0][i].type = WDMP_STRING;
     }
     status = WDMP_SUCCESS;
+    will_return(getCurrentTimeInMicroSeconds, 1543215678000);
     expect_value(getValues, paramCount, 1);
     expect_value(getValues, index, 0);
     expect_function_call(getValues);
-    processRequest(reqPayload, transactionId, &resPayload);
+    will_return(getCurrentTimeInMicroSeconds, 1543215678899);
+    processRequest(reqPayload, transactionId, true, &resPayload, &timeSpan);
     WalInfo("resPayload : %s\n",resPayload);
+    assert_true(timeSpan.count>0);
+    assert_non_null(timeSpan.spans);
+    WalInfo("timeSpan.count : %d\n",timeSpan.count);
+    for(i=0; i<timeSpan.count; i++)
+    {
+        WalInfo("timeSpan.spans[%d].name = %s\n",i, timeSpan.spans[i].name);
+        WalInfo("timeSpan.spans[%d].start = %lu\n",i, timeSpan.spans[i].start);
+        WalInfo("timeSpan.spans[%d].duration = %d\n",i, timeSpan.spans[i].duration);
+    }
+    
     assert_non_null(resPayload);
     response = cJSON_Parse(resPayload);
     assert_non_null(response);

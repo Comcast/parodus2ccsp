@@ -33,11 +33,11 @@ static char current_transaction_id[MAX_PARAMETERVALUE_LEN] = {'\0'};
 /*                             Function Prototypes                            */
 /*----------------------------------------------------------------------------*/
 
-static int getParamValues(char *parameterNames[], int paramCount, char *CompName, char *dbusPath, money_trace_spans *timeSpan, int paramIndex,int startIndex, param_t ***paramArr,int *TotalParams);
+static int getParamValues(char *parameterNames[], int paramCount, char *CompName, char *dbusPath, money_trace_spans *timeSpan, int compIndex, int paramIndex,int startIndex, param_t ***paramArr,int *TotalParams);
 static void free_set_param_values_memory(parameterValStruct_t* val, int paramCount, char * faultParam);
 static void free_paramVal_memory(param_t ** val, int paramCount);
 static int prepare_parameterValueStruct(parameterValStruct_t* val, param_t *paramVal, char *paramName);
-static int setParamValues(param_t *paramVal, char *CompName, char *dbusPath, int paramCount,const WEBPA_SET_TYPE setType, char *transactionId);
+static int setParamValues(param_t *paramVal, char *CompName, char *dbusPath, int paramCount,const WEBPA_SET_TYPE setType, char *transactionId, uint32_t *duration);
 static void *applyWiFiSettingsTask();
 static void identifyRadioIndexToReset(int paramCount, parameterValStruct_t* val,BOOL *bRestartRadio1,BOOL *bRestartRadio2); 
 BOOL applySettingsFlag;
@@ -87,6 +87,13 @@ void getValues(const char *paramName[], const unsigned int paramCount, int index
             isLargeWildCard = 1;
         }
 
+        if(timeSpan)
+        {
+            timeSpan->spans = (money_trace_span *) malloc(sizeof(money_trace_span)* compCount);
+            memset(timeSpan->spans,0,(sizeof(money_trace_span)* compCount));
+            timeSpan->count = compCount;
+        }
+
         for(cnt1 = 0; cnt1 < compCount; cnt1++)
         {
             WalPrint("------------- Parameter group -------------\n");
@@ -101,19 +108,24 @@ void getValues(const char *paramName[], const unsigned int paramCount, int index
             {
                 ret = CCSP_ERR_WIFI_BUSY;
                 WalError("WiFi component is busy\n");
+                if(timeSpan)
+                {
+                    timeSpan->count = 0;
+                    WAL_FREE(timeSpan->spans);
+                }
                 break;
             }
             WalPrint("index: %d startIndex: %d\n",index, startIndex);
 
             if(isLargeWildCard == 1)
             {
-                ret = getParamValues(ParamGroup[cnt1].parameterName, ParamGroup[cnt1].parameterCount, ParamGroup[cnt1].comp_name, ParamGroup[cnt1].dbus_path, timeSpan, index, startIndex, paramArr,&retCount);
+                ret = getParamValues(ParamGroup[cnt1].parameterName, ParamGroup[cnt1].parameterCount, ParamGroup[cnt1].comp_name, ParamGroup[cnt1].dbus_path, timeSpan, cnt1, index, startIndex, paramArr,&retCount);
                 startIndex = startIndex + retCount;
             }
             else
             {
                 startIndex = 0;
-                ret = getParamValues(ParamGroup[cnt1].parameterName, ParamGroup[cnt1].parameterCount, ParamGroup[cnt1].comp_name, ParamGroup[cnt1].dbus_path, timeSpan, index, startIndex, paramArr,&retCount);
+                ret = getParamValues(ParamGroup[cnt1].parameterName, ParamGroup[cnt1].parameterCount, ParamGroup[cnt1].comp_name, ParamGroup[cnt1].dbus_path, timeSpan, cnt1, index, startIndex, paramArr,&retCount);
                 index = index + ParamGroup[cnt1].parameterCount;   
             }
             WalPrint("After getParamValues index = %d ,startIndex : %d retCount =  %d\n",index,startIndex,retCount);
@@ -140,6 +152,7 @@ void setValues(const param_t paramVal[], const unsigned int paramCount, const WE
         char **compName = NULL;
         char **dbusPath = NULL;
         param_t **val = NULL;
+        uint32_t duration = 0;
         param_t **rollbackVal = NULL;
         param_t **storeGetValue = NULL;// To store param values before failure occurs
 
@@ -174,6 +187,13 @@ void setValues(const param_t paramVal[], const unsigned int paramCount, const WE
 
                 storeGetValue = (param_t **)malloc(sizeof(param_t *) * paramCount);
                 memset(storeGetValue,0,(sizeof(param_t *) * paramCount));
+
+                if(timeSpan)
+                {
+                    timeSpan->spans = (money_trace_span *) malloc(sizeof(money_trace_span)* compCount);
+                    memset(timeSpan->spans,0,(sizeof(money_trace_span)* compCount));
+                    timeSpan->count = compCount;
+                }
                 
                 for(j = 0; j < compCount ;j++)
                 {
@@ -191,12 +211,17 @@ void setValues(const param_t paramVal[], const unsigned int paramCount, const WE
                                 ret = CCSP_ERR_WIFI_BUSY;
                                 WalError("WiFi component is busy\n");
                                 getFlag = 1;
+                                if(timeSpan)
+                                {
+                                    timeSpan->count = 0;
+                                    WAL_FREE(timeSpan->spans);
+                                }
                                 break;
                         }
                         
                         WalPrint("B4 getParamValues index = %d\n", index);
                         //GET values for rollback purpose
-                        ret = getParamValues(ParamGroup[i].parameterName, ParamGroup[i].parameterCount, ParamGroup[i].comp_name, ParamGroup[i].dbus_path, timeSpan, index, 0, &storeGetValue,&retCount);
+                        ret = getParamValues(ParamGroup[i].parameterName, ParamGroup[i].parameterCount, ParamGroup[i].comp_name, ParamGroup[i].dbus_path, timeSpan, i, index, 0, &storeGetValue,&retCount);
 		  	WalPrint("After getParamValues index = %d , retCount =  %d\n",index,retCount);
                         if(ret != CCSP_SUCCESS)
                         {
@@ -212,7 +237,7 @@ void setValues(const param_t paramVal[], const unsigned int paramCount, const WE
                                 break;
                         }
                         else
-                        {		 
+                        {
                                 for(j = 0; j < retCount ; j++)
                                 {
                                         WalPrint("storeGetValue[%d]->name : %s, storeGetValue[%d]->value : %s, storeGetValue[%d]->type : %d\n",index,storeGetValue[index]->name,index,storeGetValue[index]->value,index,storeGetValue[index]->type);
@@ -271,7 +296,14 @@ void setValues(const param_t paramVal[], const unsigned int paramCount, const WE
                                 else
                                 {
                                         WalPrint("ParamGroup[%d].comp_name : %s\n",i,ParamGroup[i].comp_name);
-                                        ret = setParamValues(val[i], ParamGroup[i].comp_name,ParamGroup[i].dbus_path,ParamGroup[i].parameterCount, setType, transactionId);
+                                        ret = setParamValues(val[i], ParamGroup[i].comp_name,ParamGroup[i].dbus_path,ParamGroup[i].parameterCount, setType, transactionId, &duration);
+                                        if(timeSpan)
+                                        {
+                                            WalPrint("timeSpan->spans[%d].name : %s\n",i,timeSpan->spans[i].name);
+                                            WalPrint("duration : %lu\n",duration);
+                                            timeSpan->spans[i].duration = timeSpan->spans[i].duration + duration;
+                                            WalPrint("timeSpan->spans[%d].duration : %lu\n",i,timeSpan->spans[i].duration);
+                                        }
                                         WalPrint("ret : %d\n",ret);
                                         if(ret != CCSP_SUCCESS)
                                         {
@@ -285,7 +317,14 @@ void setValues(const param_t paramVal[], const unsigned int paramCount, const WE
                                                         if(indexWifi != rev)
                                                         {
                                                                 WalPrint("ParamGroup[%d].comp_name : %s\n",rev,ParamGroup[rev].comp_name);
-                                                                checkSetstatus = setParamValues(rollbackVal[rev],ParamGroup[rev].comp_name,ParamGroup[rev].dbus_path, ParamGroup[rev].parameterCount, setType, transactionId);
+                                                                checkSetstatus = setParamValues(rollbackVal[rev],ParamGroup[rev].comp_name,ParamGroup[rev].dbus_path, ParamGroup[rev].parameterCount, setType, transactionId, &duration);
+                                                                if(timeSpan)
+                                                                {
+                                                                    WalPrint("timeSpan->spans[%d].name : %s\n",rev,timeSpan->spans[rev].name);
+                                                                    WalPrint("duration : %lu\n",duration);
+                                                                    timeSpan->spans[rev].duration = timeSpan->spans[rev].duration + duration;
+                                                                    WalPrint("timeSpan->spans[%d].duration : %lu\n",rev,timeSpan->spans[rev].duration);
+                                                                }
                                                                 WalPrint("checkSetstatus is : %d\n",checkSetstatus);
                                                                 if(checkSetstatus != CCSP_SUCCESS)
                                                                 {
@@ -308,7 +347,14 @@ void setValues(const param_t paramVal[], const unsigned int paramCount, const WE
                         {
                                 WalPrint("Wifi SET at end\n");
                                 WalPrint("ParamGroup[%d].comp_name : %s\n",indexWifi,ParamGroup[indexWifi].comp_name);
-                                ret = setParamValues(val[indexWifi], ParamGroup[indexWifi].comp_name,ParamGroup[indexWifi].dbus_path, ParamGroup[indexWifi].parameterCount, setType, transactionId);
+                                ret = setParamValues(val[indexWifi], ParamGroup[indexWifi].comp_name,ParamGroup[indexWifi].dbus_path, ParamGroup[indexWifi].parameterCount, setType, transactionId, &duration);
+                                if(timeSpan)
+                                {
+                                        WalPrint("timeSpan->spans[%d].name : %s\n",indexWifi,timeSpan->spans[indexWifi].name);
+                                        WalPrint("duration : %lu\n",duration);
+                                        timeSpan->spans[indexWifi].duration = timeSpan->spans[indexWifi].duration + duration;
+                                        WalPrint("timeSpan->spans[%d].duration : %lu\n",indexWifi,timeSpan->spans[indexWifi].duration);
+                                }
                                 if(ret != CCSP_SUCCESS)
                                 {
                                         WalError("Failed atomic set for WIFI hence rollbacking the changes. ret :%d and i is %d\n",ret,i);
@@ -321,7 +367,14 @@ void setValues(const param_t paramVal[], const unsigned int paramCount, const WE
                                                 if(indexWifi != rev)
                                                 {
                                                         WalPrint("ParamGroup[%d].comp_name : %s\n",rev,ParamGroup[rev].comp_name);
-                                                        checkSetstatus = setParamValues(rollbackVal[rev], ParamGroup[rev].comp_name,ParamGroup[rev].dbus_path, ParamGroup[rev].parameterCount, setType, transactionId);	
+                                                        checkSetstatus = setParamValues(rollbackVal[rev], ParamGroup[rev].comp_name,ParamGroup[rev].dbus_path, ParamGroup[rev].parameterCount, setType, transactionId, &duration);
+                                                        if(timeSpan)
+                                                        {
+                                                                WalPrint("timeSpan->spans[%d].name : %s\n",rev,timeSpan->spans[rev].name);
+                                                                WalPrint("duration : %lu\n",duration);
+                                                                timeSpan->spans[rev].duration = timeSpan->spans[rev].duration + duration;
+                                                                WalPrint("timeSpan->spans[%d].duration : %lu\n",rev,timeSpan->spans[rev].duration);
+                                                        }
                                                         WalPrint("checkSetstatus is: %d\n",checkSetstatus);
                                                         if(checkSetstatus != CCSP_SUCCESS)
                                                         {
@@ -397,11 +450,14 @@ void initApplyWiFiSettings()
  * @param[out] TotalParams Number of parameters returned from stack
  */
  
-static int getParamValues(char *parameterNames[], int paramCount, char *CompName, char *dbusPath, money_trace_spans *timeSpan, int paramIndex,int startIndex, param_t ***paramArr,int *TotalParams)
+static int getParamValues(char *parameterNames[], int paramCount, char *CompName, char *dbusPath, money_trace_spans *timeSpan, int compIndex, int paramIndex,int startIndex, param_t ***paramArr,int *TotalParams)
 {
     int ret = 0, val_size = 0, cnt=0, retIndex=0, error=0;
     char **parameterNamesLocal = NULL;
     parameterValStruct_t **parameterval = NULL;
+    uint64_t startTime = 0, endTime = 0;
+	struct timespec start, end;
+	uint32_t timeDuration = 0;
     WalPrint(" ------ Start of getParamValues ----\n");
     parameterNamesLocal = (char **) malloc(sizeof(char *) * paramCount);
     memset(parameterNamesLocal,0,(sizeof(char *) * paramCount));
@@ -428,6 +484,11 @@ static int getParamValues(char *parameterNames[], int paramCount, char *CompName
                 WalError("%s has invalid WiFi index, Valid range is between 10001-10008 and 10101-10108. ret = %d\n",parameterNamesLocal[cnt], ret);
             }
             error = 1;
+            if(timeSpan)
+			{
+				timeSpan->count = 0;
+				WAL_FREE(timeSpan->spans);
+			}
             break;
         }
 
@@ -437,6 +498,11 @@ static int getParamValues(char *parameterNames[], int paramCount, char *CompName
     if(error != 1)
     {
         WalInfo("CompName = %s, dbusPath : %s, paramCount = %d\n", CompName, dbusPath, paramCount);
+        if(timeSpan)
+	    {
+		    startTime = getCurrentTimeInMicroSeconds(&start);
+		    WalPrint("component start_time : %llu\n",startTime);
+	    }
         if(strcmp(CompName, RDKB_WEBPA_FULL_COMPONENT_NAME) == 0)
         {
             ret = getWebpaParameterValues(parameterNamesLocal, paramCount, &val_size, &parameterval);
@@ -445,6 +511,19 @@ static int getParamValues(char *parameterNames[], int paramCount, char *CompName
         {
             ret = CcspBaseIf_getParameterValues(bus_handle,CompName,dbusPath,parameterNamesLocal,paramCount, &val_size, &parameterval);
         }
+        if(timeSpan)
+	    {
+		    endTime = getCurrentTimeInMicroSeconds(&end);
+		    timeDuration = endTime - startTime;
+		    timeSpan->spans[compIndex].name = strdup(CompName);
+		    WalPrint("timeSpan->spans[%d].name : %s\n",compIndex,timeSpan->spans[compIndex].name);
+		    WalPrint("start_time : %llu\n",startTime);
+		    timeSpan->spans[compIndex].start = startTime;
+		    WalPrint("timeSpan->spans[%d].start : %llu\n",compIndex,timeSpan->spans[compIndex].start);
+		    WalPrint("timeDuration : %lu\n",timeDuration);
+		    timeSpan->spans[compIndex].duration = timeDuration;
+		    WalPrint("timeSpan->spans[%d].duration : %lu\n",compIndex,timeSpan->spans[compIndex].duration);
+	    }
         WalPrint("----- After GPV ret = %d------\n",ret);
         if (ret != CCSP_SUCCESS)
         {
@@ -625,13 +704,16 @@ static int prepare_parameterValueStruct(parameterValStruct_t* val, param_t *para
  * @param[in] paramCount count of paramter nanmes
  * @param[in] setType Flag to specify the type of set operation.
  */
-static int setParamValues(param_t *paramVal, char *CompName, char *dbusPath, int paramCount,const WEBPA_SET_TYPE setType, char *transactionId)
+static int setParamValues(param_t *paramVal, char *CompName, char *dbusPath, int paramCount,const WEBPA_SET_TYPE setType, char *transactionId, uint32_t *duration)
 {
         char* faultParam = NULL;
         int ret=0, cnt = 0, retIndex=0;
         char paramName[MAX_PARAMETERNAME_LEN] = { 0 };
         char objectName[MAX_PARAMETERNAME_LEN] = { 0 };
         unsigned int writeID = CCSP_COMPONENT_ID_WebPA;
+        uint64_t startTime = 0, endTime = 0;
+        struct timespec start, end;
+        uint32_t timeDuration = 0;
 
         WalPrint("------------------ start of setParamValues ----------------\n");
         parameterValStruct_t* val = (parameterValStruct_t*) malloc(sizeof(parameterValStruct_t) * paramCount);
@@ -676,6 +758,7 @@ static int setParamValues(param_t *paramVal, char *CompName, char *dbusPath, int
                 bRadioRestartEn = TRUE;
         }
 
+        startTime = getCurrentTimeInMicroSeconds(&start);
         if(strcmp(CompName, RDKB_WEBPA_FULL_COMPONENT_NAME) == 0)
         {
             ret = setWebpaParameterValues(val, paramCount,&faultParam);
@@ -684,6 +767,11 @@ static int setParamValues(param_t *paramVal, char *CompName, char *dbusPath, int
         {
             ret = CcspBaseIf_setParameterValues(bus_handle, CompName, dbusPath, 0, writeID, val, paramCount, TRUE, &faultParam);
         }
+        endTime = getCurrentTimeInMicroSeconds(&end);	
+        timeDuration = endTime - startTime;
+        WalPrint("timeDuration : %lu\n",timeDuration);
+        *duration = timeDuration;
+        WalPrint("*duration : %lu\n",*duration);
 
         if(!strcmp(CompName,RDKB_WIFI_FULL_COMPONENT_NAME))
         {
